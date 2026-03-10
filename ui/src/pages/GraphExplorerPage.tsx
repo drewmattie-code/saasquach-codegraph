@@ -24,9 +24,9 @@ export default function GraphExplorerPage() {
   const [selected, setSelected] = useState<Node | null>(null)
   const [zoom, setZoom] = useState(1)
 
-  const wrapperRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const positionsRef = useRef<Node[]>([])
+  const lastPositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map())
 
   useEffect(() => {
     fetch('/api/graph?limit=500')
@@ -66,11 +66,10 @@ export default function GraphExplorerPage() {
 
   useEffect(() => {
     if (loading) return
-    const wrapper = wrapperRef.current
     const canvas = canvasRef.current
-    if (!wrapper || !canvas) return
+    if (!canvas) return
 
-    const W = wrapper.clientWidth || 900
+    const W = canvas.offsetWidth || 900
     const H = Math.max(420, window.innerHeight - 120)
     const dpr = window.devicePixelRatio || 1
     canvas.width = W * dpr
@@ -96,19 +95,122 @@ export default function GraphExplorerPage() {
       r: 6 + Math.min((conn.get(n.id) ?? 0) * 1.4, 20),
     }))
     const nodeById = new Map(nodes.map((n) => [n.id, n]))
-    const links: Link[] = filteredEdges.map((e) => ({ source: nodeById.get(String(e.source))!, target: nodeById.get(String(e.target))! }))
+    const links: Link[] = filteredEdges
+      .filter((e) => nodeById.has(String(e.source)) && nodeById.has(String(e.target)))
+      .map((e) => ({ source: nodeById.get(String(e.source))!, target: nodeById.get(String(e.target))! }))
 
-    const sim = d3
-      .forceSimulation(nodes)
-      .force('charge', d3.forceManyBody().strength(-130))
-      .force('center', d3.forceCenter(W / 2, H / 2))
-      .force('link', d3.forceLink<Node, Link>(links).id((d) => d.id).distance(65))
-      .force('collision', d3.forceCollide<Node>().radius((d) => d.r + 5))
+    // Read previous positions from the persistent ref for smooth transitions
+    const prevPositions = new Map(lastPositionsRef.current)
 
+    // ---- Helper: build a tree hierarchy from the graph ----
+    function buildHierarchy() {
+      // Find root: node with most connections
+      let rootId = nodes[0]?.id
+      let maxConn = 0
+      nodes.forEach((n) => {
+        const c = conn.get(Number(n.id)) ?? 0
+        if (c > maxConn) { maxConn = c; rootId = n.id }
+      })
+
+      // Build adjacency list
+      const adj = new Map<string, Set<string>>()
+      nodes.forEach((n) => adj.set(n.id, new Set()))
+      links.forEach((l) => {
+        const sId = typeof l.source === 'object' ? (l.source as Node).id : String(l.source)
+        const tId = typeof l.target === 'object' ? (l.target as Node).id : String(l.target)
+        adj.get(sId)?.add(tId)
+        adj.get(tId)?.add(sId)
+      })
+
+      // BFS to build tree structure (handles cycles and disconnected components)
+      const visited = new Set<string>()
+      type HierNode = { id: string; children: HierNode[] }
+      const rootHier: HierNode = { id: rootId, children: [] }
+      const queue: HierNode[] = [rootHier]
+      visited.add(rootId)
+
+      while (queue.length > 0) {
+        const current = queue.shift()!
+        const neighbors = adj.get(current.id)
+        if (neighbors) {
+          neighbors.forEach((nId) => {
+            if (!visited.has(nId)) {
+              visited.add(nId)
+              const child: HierNode = { id: nId, children: [] }
+              current.children.push(child)
+              queue.push(child)
+            }
+          })
+        }
+      }
+
+      // Attach disconnected components as children of root
+      nodes.forEach((n) => {
+        if (!visited.has(n.id)) {
+          visited.add(n.id)
+          const orphan: HierNode = { id: n.id, children: [] }
+          rootHier.children.push(orphan)
+          // BFS from this orphan too
+          const oQueue: HierNode[] = [orphan]
+          while (oQueue.length > 0) {
+            const cur = oQueue.shift()!
+            const nbrs = adj.get(cur.id)
+            if (nbrs) {
+              nbrs.forEach((nId) => {
+                if (!visited.has(nId)) {
+                  visited.add(nId)
+                  const child: HierNode = { id: nId, children: [] }
+                  cur.children.push(child)
+                  oQueue.push(child)
+                }
+              })
+            }
+          }
+        }
+      })
+
+      return rootHier
+    }
+
+    // ---- Helper: compute target positions for Tree and Radial layouts ----
+    function computeStaticPositions(): Map<string, { x: number; y: number }> {
+      const hierData = buildHierarchy()
+      const root = d3.hierarchy(hierData, (d) => d.children)
+      const positions = new Map<string, { x: number; y: number }>()
+
+      if (layout === 'Tree') {
+        const treeLayout = d3.tree<typeof hierData>().size([W - 80, H - 80])
+        treeLayout(root)
+        root.each((d) => {
+          positions.set(d.data.id, { x: (d.x ?? 0) + 40, y: (d.y ?? 0) + 40 })
+        })
+      } else {
+        // Radial layout
+        const radius = Math.min(W, H) / 2 - 60
+        const treeLayout = d3.tree<typeof hierData>().size([2 * Math.PI, radius])
+        treeLayout(root)
+        root.each((d) => {
+          const angle = d.x ?? 0
+          const r = d.y ?? 0
+          positions.set(d.data.id, {
+            x: W / 2 + r * Math.cos(angle - Math.PI / 2),
+            y: H / 2 + r * Math.sin(angle - Math.PI / 2),
+          })
+        })
+      }
+
+      return positions
+    }
+
+    // ---- Rendering function shared across all layouts ----
     let tick = 0
-    sim.on('tick', () => {
+    function draw() {
       tick += 0.014
       positionsRef.current = nodes
+      // Persist current positions for layout transitions
+      nodes.forEach((n) => {
+        if (n.x != null && n.y != null) lastPositionsRef.current.set(n.id, { x: n.x, y: n.y })
+      })
       ctx.clearRect(0, 0, W, H)
       ctx.save()
       ctx.translate(W / 2, H / 2)
@@ -145,10 +247,87 @@ export default function GraphExplorerPage() {
         ctx.stroke()
       })
       ctx.restore()
-    })
+    }
 
-    return () => { sim.stop() }
-  }, [filteredEdges, filteredNodes, loading, selected?.id, zoom])
+    let cleanupFn: () => void = () => {}
+
+    if (layout === 'Force') {
+      // ---- Force layout (original) ----
+      const sim = d3
+        .forceSimulation(nodes)
+        .force('charge', d3.forceManyBody().strength(-130))
+        .force('center', d3.forceCenter(W / 2, H / 2))
+        .force('link', d3.forceLink<Node, Link>(links).id((d) => d.id).distance(65))
+        .force('collision', d3.forceCollide<Node>().radius((d) => d.r + 5))
+
+      sim.on('tick', draw)
+      cleanupFn = () => { sim.stop() }
+    } else {
+      // ---- Tree / Radial layout (static positioning with animated transition) ----
+      const targetPositions = computeStaticPositions()
+
+      // Set starting positions for animation
+      nodes.forEach((n) => {
+        const prev = prevPositions.get(n.id)
+        if (prev) {
+          n.x = prev.x
+          n.y = prev.y
+        } else {
+          // Default: center of canvas
+          n.x = n.x ?? W / 2
+          n.y = n.y ?? H / 2
+        }
+      })
+
+      // Animate transition over ~500ms (30 frames at ~60fps)
+      const TRANSITION_FRAMES = 30
+      let frame = 0
+      let rafId: number
+      let postTransitionRafId: number
+
+      function animateTransition() {
+        frame++
+        const t = Math.min(frame / TRANSITION_FRAMES, 1)
+        // Ease-in-out cubic
+        const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
+
+        nodes.forEach((n) => {
+          const target = targetPositions.get(n.id)
+          const start = prevPositions.get(n.id) ?? { x: W / 2, y: H / 2 }
+          if (target) {
+            n.x = start.x + (target.x - start.x) * ease
+            n.y = start.y + (target.y - start.y) * ease
+          }
+        })
+
+        draw()
+
+        if (t < 1) {
+          rafId = requestAnimationFrame(animateTransition)
+        } else {
+          // Snap to final positions
+          nodes.forEach((n) => {
+            const target = targetPositions.get(n.id)
+            if (target) { n.x = target.x; n.y = target.y }
+          })
+          // Continue drawing for animated dashes
+          function postDraw() {
+            draw()
+            postTransitionRafId = requestAnimationFrame(postDraw)
+          }
+          postTransitionRafId = requestAnimationFrame(postDraw)
+        }
+      }
+
+      rafId = requestAnimationFrame(animateTransition)
+      cleanupFn = () => {
+        cancelAnimationFrame(rafId)
+        cancelAnimationFrame(postTransitionRafId)
+      }
+    }
+
+    return () => { cleanupFn() }
+  }, [filteredEdges, filteredNodes, loading, selected?.id, zoom, layout])
 
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect()
@@ -215,7 +394,7 @@ export default function GraphExplorerPage() {
           {loading ? (
             <div className="h-full w-full animate-pulse bg-[linear-gradient(90deg,var(--bg-raised)_25%,var(--bg-hover)_50%,var(--bg-raised)_75%)] [background-size:200%_100%]" />
           ) : (
-            <div ref={wrapperRef} className="h-full w-full">
+            <div className="h-full w-full">
               <canvas ref={canvasRef} onClick={handleCanvasClick} className="h-full w-full" />
             </div>
           )}

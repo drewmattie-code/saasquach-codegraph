@@ -39,7 +39,10 @@ export function DependencyGraphCanvas() {
           const health: NodeHealth = type === 'class' ? 'warn' : (type === 'file' || type === 'module') ? 'risk' : 'good'
           return { id: String(n.id), name: n.name, health, r: 8 + Math.min((conn.get(String(n.id)) ?? 0) * 2, 24) }
         })
-        const ls: GraphLink[] = data.edges.map(e => ({ source: String(e.source), target: String(e.target), weight: 1 }))
+        const nodeIdSet = new Set(ns.map(n => n.id))
+        const ls: GraphLink[] = data.edges
+          .filter(e => nodeIdSet.has(String(e.source)) && nodeIdSet.has(String(e.target)))
+          .map(e => ({ source: String(e.source), target: String(e.target), weight: 1 }))
         setNodes(ns); setLinks(ls); setReady(true)
       })
       .catch(e => { if (!cancelled) setError(e.message) })

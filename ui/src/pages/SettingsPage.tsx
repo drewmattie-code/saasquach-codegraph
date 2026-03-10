@@ -18,11 +18,31 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: () => void 
   )
 }
 
+type IndexDepth = 'shallow' | 'standard' | 'deep'
+type FontSize = 'small' | 'medium' | 'large'
+
 export default function SettingsPage() {
   const [active, setActive] = useState<Section>('General')
   const [stats, setStats] = useState<Stats | null>(null)
   const [repos, setRepos] = useState<Repo[]>([])
   const [settings, setSettings] = useState({ autoReindex: true, includeDependencies: true, deepAnalysis: false })
+  const [indexing, setIndexing] = useState(false)
+  const [indexDepth, setIndexDepth] = useState<IndexDepth>('standard')
+  const [excludePatterns, setExcludePatterns] = useState('node_modules\n.git\n__pycache__\ndist\nbuild')
+  const [theme, setTheme] = useState<'dark' | 'light'>('dark')
+  const [fontSize, setFontSize] = useState<FontSize>('medium')
+  const [compactMode, setCompactMode] = useState(false)
+  const [showLineNumbers, setShowLineNumbers] = useState(true)
+
+  const handleReindex = () => {
+    if (repos.length === 0) return
+    setIndexing(true)
+    fetch('/api/repos/index', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: repos[0].path }),
+    }).finally(() => setIndexing(false))
+  }
 
   useEffect(() => {
     Promise.all([
@@ -101,9 +121,166 @@ export default function SettingsPage() {
             </div>
           )}
 
-          {active !== 'General' && active !== 'About' && (
-            <div className="grid h-48 place-items-center rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-base)] text-sm text-[var(--text-secondary)]">
-              {active} settings panel ready for configuration inputs.
+          {active === 'Indexing' && (
+            <div className="space-y-4">
+              <section className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-base)] p-4">
+                <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-secondary)]">Re-index</div>
+                <div className="mt-3 flex items-center justify-between">
+                  <div>
+                    <div className="text-sm text-[var(--text-primary)]">Re-index all repositories</div>
+                    <div className="mt-1 text-xs text-[var(--text-tertiary)]" style={numberStyle}>Last indexed: 2 minutes ago</div>
+                  </div>
+                  <button
+                    onClick={handleReindex}
+                    disabled={indexing}
+                    className="rounded-lg border border-[var(--accent-graph)] bg-[var(--accent-graph)] px-4 py-2 text-sm font-medium text-white transition hover:opacity-90 disabled:opacity-50"
+                  >
+                    {indexing ? 'Indexing…' : 'Re-index now'}
+                  </button>
+                </div>
+              </section>
+
+              <section className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-base)] p-4">
+                <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-secondary)]">Exclude Patterns</div>
+                <p className="mt-1 text-xs text-[var(--text-tertiary)]">One pattern per line. Matching directories are skipped during indexing.</p>
+                <textarea
+                  value={excludePatterns}
+                  onChange={(e) => setExcludePatterns(e.target.value)}
+                  rows={5}
+                  className="mt-3 w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-raised)] px-3 py-2 font-mono text-sm text-[var(--text-primary)] focus:border-[var(--accent-graph)] focus:outline-none"
+                />
+              </section>
+
+              <section className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-base)] p-4">
+                <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-secondary)]">Index Depth</div>
+                <div className="mt-3 space-y-2">
+                  {(['shallow', 'standard', 'deep'] as IndexDepth[]).map((depth) => (
+                    <label key={depth} className="flex cursor-pointer items-center gap-3 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-raised)] px-3 py-2 transition hover:bg-[var(--bg-hover)]">
+                      <span className={`grid h-4 w-4 place-items-center rounded-full border ${indexDepth === depth ? 'border-[var(--accent-graph)]' : 'border-[var(--border-default)]'}`}>
+                        {indexDepth === depth && <span className="h-2 w-2 rounded-full bg-[var(--accent-graph)]" />}
+                      </span>
+                      <input type="radio" name="indexDepth" value={depth} checked={indexDepth === depth} onChange={() => setIndexDepth(depth)} className="sr-only" />
+                      <div>
+                        <div className="text-sm capitalize text-[var(--text-primary)]">{depth}</div>
+                        <div className="text-xs text-[var(--text-tertiary)]">
+                          {depth === 'shallow' && 'Scan top-level files and exports only'}
+                          {depth === 'standard' && 'Full AST parse with dependency resolution'}
+                          {depth === 'deep' && 'Standard + cross-repo linking and data-flow analysis'}
+                        </div>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+              </section>
+            </div>
+          )}
+
+          {active === 'Appearance' && (
+            <div className="space-y-4">
+              <section className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-base)] p-4">
+                <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-secondary)]">Theme</div>
+                <div className="mt-3 flex gap-2">
+                  {(['dark', 'light'] as const).map((t) => (
+                    <button
+                      key={t}
+                      onClick={() => setTheme(t)}
+                      className={`flex-1 rounded-lg border px-4 py-2 text-sm font-medium capitalize transition ${theme === t ? 'border-[var(--accent-graph)] bg-[var(--accent-graph)] text-white' : 'border-[var(--border-default)] bg-[var(--bg-raised)] text-[var(--text-primary)] hover:bg-[var(--bg-hover)]'}`}
+                    >
+                      {t}
+                    </button>
+                  ))}
+                </div>
+              </section>
+
+              <section className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-base)] p-4">
+                <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-secondary)]">Font Size</div>
+                <div className="mt-3 space-y-2">
+                  {(['small', 'medium', 'large'] as FontSize[]).map((size) => (
+                    <label key={size} className="flex cursor-pointer items-center gap-3 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-raised)] px-3 py-2 transition hover:bg-[var(--bg-hover)]">
+                      <span className={`grid h-4 w-4 place-items-center rounded-full border ${fontSize === size ? 'border-[var(--accent-graph)]' : 'border-[var(--border-default)]'}`}>
+                        {fontSize === size && <span className="h-2 w-2 rounded-full bg-[var(--accent-graph)]" />}
+                      </span>
+                      <input type="radio" name="fontSize" value={size} checked={fontSize === size} onChange={() => setFontSize(size)} className="sr-only" />
+                      <span className="text-sm capitalize text-[var(--text-primary)]">{size}</span>
+                    </label>
+                  ))}
+                </div>
+              </section>
+
+              <section className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-base)] p-4">
+                <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-secondary)]">Display</div>
+                <div className="mt-3 space-y-3">
+                  <div className="flex items-center justify-between rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-raised)] px-3 py-2">
+                    <span className="text-sm text-[var(--text-primary)]">Compact mode</span>
+                    <Toggle checked={compactMode} onChange={() => setCompactMode((v) => !v)} />
+                  </div>
+                  <div className="flex items-center justify-between rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-raised)] px-3 py-2">
+                    <span className="text-sm text-[var(--text-primary)]">Show line numbers in code views</span>
+                    <Toggle checked={showLineNumbers} onChange={() => setShowLineNumbers((v) => !v)} />
+                  </div>
+                </div>
+              </section>
+            </div>
+          )}
+
+          {active === 'Integrations' && (
+            <div className="space-y-4">
+              <section className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-base)] p-4">
+                <div className="flex items-center gap-3">
+                  <div className="grid h-10 w-10 place-items-center rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-raised)] text-lg">
+                    <svg width="20" height="20" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" /></svg>
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-[var(--text-primary)]" style={{ fontFamily: 'var(--font-display)' }}>GitHub</span>
+                      <span className="flex items-center gap-1 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-raised)] px-2 py-0.5 text-[10px] uppercase tracking-[0.08em] text-[var(--accent-health)]">
+                        <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent-health)]" />
+                        Connected
+                      </span>
+                    </div>
+                    <div className="mt-0.5 text-xs text-[var(--text-tertiary)]">Org: Acme Corp</div>
+                  </div>
+                  <button className="rounded-lg border border-[var(--border-default)] bg-[var(--bg-raised)] px-3 py-2 text-xs hover:bg-[var(--bg-hover)]">Configure</button>
+                </div>
+              </section>
+
+              <section className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-base)] p-4">
+                <div className="flex items-center gap-3">
+                  <div className="grid h-10 w-10 place-items-center rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-raised)] text-lg">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /><path d="M2 12l10 5 10-5" /></svg>
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-[var(--text-primary)]" style={{ fontFamily: 'var(--font-display)' }}>MCP Connector</span>
+                      <span className="flex items-center gap-1 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-raised)] px-2 py-0.5 text-[10px] uppercase tracking-[0.08em] text-[var(--accent-flow)]">
+                        <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent-flow)]" />
+                        Active
+                      </span>
+                    </div>
+                    <div className="mt-0.5 text-xs text-[var(--text-tertiary)]">Oracle ERP Connector</div>
+                  </div>
+                  <button className="rounded-lg border border-[var(--border-default)] bg-[var(--bg-raised)] px-3 py-2 text-xs hover:bg-[var(--bg-hover)]">Configure</button>
+                </div>
+              </section>
+
+              <section className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-base)] p-4">
+                <div className="flex items-center gap-3">
+                  <div className="grid h-10 w-10 place-items-center rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-raised)] text-lg">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" /><polyline points="14 2 14 8 20 8" /><line x1="9" y1="15" x2="15" y2="15" /></svg>
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-[var(--text-primary)]" style={{ fontFamily: 'var(--font-display)' }}>Slack Notifications</span>
+                      <span className="flex items-center gap-1 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-raised)] px-2 py-0.5 text-[10px] uppercase tracking-[0.08em] text-[var(--text-tertiary)]">
+                        <span className="h-1.5 w-1.5 rounded-full bg-[var(--text-tertiary)]" />
+                        Disconnected
+                      </span>
+                    </div>
+                    <div className="mt-0.5 text-xs text-[var(--text-tertiary)]">Send alerts and reports to Slack channels</div>
+                  </div>
+                  <button className="rounded-lg border border-[var(--accent-graph)] bg-[var(--accent-graph)] px-3 py-2 text-xs font-medium text-white transition hover:opacity-90">Connect</button>
+                </div>
+              </section>
             </div>
           )}
         </div>

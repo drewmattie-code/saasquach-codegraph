@@ -45,7 +45,12 @@ export default function RepositoriesPage() {
     ])
       .then(([repoData, statsData]: [Repo[], Stats]) => {
         if (cancelled) return
-        setRepos(repoData)
+        const filtered = repoData.filter((r: Repo) =>
+          !r.path.startsWith('/private/var/') &&
+          !r.path.startsWith('/tmp/') &&
+          !r.path.includes('/T/cgc_test')
+        )
+        setRepos(filtered)
         setStats(statsData)
       })
       .finally(() => {
@@ -77,7 +82,7 @@ export default function RepositoriesPage() {
         </button>
       </motion.header>
 
-      <motion.section variants={card} className="grid grid-cols-1 gap-4 xl:grid-cols-3 md:grid-cols-2">
+      <motion.section variants={card} className="grid grid-cols-1 gap-4 pr-5 xl:grid-cols-3 md:grid-cols-2">
         {loading
           ? Array.from({ length: 6 }).map((_, i) => (
               <div key={i} className="animate-pulse rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-raised)] p-4">

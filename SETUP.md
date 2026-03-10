@@ -2,6 +2,10 @@
 
 This repository is running locally in editable mode with the CLI, MCP server, indexing pipeline, and tests verified.
 
+Local web stack ports:
+- UI: `http://localhost:7476`
+- API: `http://localhost:7478`
+
 ## 1) Install and run (exact commands)
 
 ```bash

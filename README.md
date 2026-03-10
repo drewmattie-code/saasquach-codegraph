@@ -8,13 +8,13 @@
 ```
 
 - Frontend: http://localhost:7476
-- API: http://localhost:7477
+- API: http://localhost:7478
 
 ### API-only
 ```bash
 source .venv/bin/activate
 pip install -r api/requirements.txt
-uvicorn api.main:app --reload --port 7477
+uvicorn api.main:app --reload --port 7478
 ```
 
 ### UI-only

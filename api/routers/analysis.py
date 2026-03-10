@@ -28,3 +28,13 @@ def callers(name: str) -> list[dict]:
 @router.get("/chain")
 def chain(from_function: str, to_function: str) -> list[dict]:
     return cgc_service.chain(from_function, to_function)
+
+
+@router.get("/dependencies/{module_name}")
+def dependencies(module_name: str) -> dict:
+    return cgc_service.dependencies(module_name)
+
+
+@router.get("/inheritance/{class_name}")
+def inheritance(class_name: str) -> dict:
+    return cgc_service.inheritance(class_name)

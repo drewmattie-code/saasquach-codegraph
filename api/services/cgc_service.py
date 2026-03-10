@@ -165,6 +165,31 @@ class CGCService:
     def chain(self, from_function: str, to_function: str) -> list[dict[str, Any]]:
         return self.code_finder.find_function_call_chain(from_function, to_function, 8)
 
+    def dependencies(self, module_name: str) -> dict[str, list[str]]:
+        rows = self._run_query(
+            """
+            MATCH (m:File {name:$name})
+            OPTIONAL MATCH (m)-[:IMPORTS]->(out)
+            OPTIONAL MATCH (incoming)-[:IMPORTS]->(m)
+            RETURN collect(DISTINCT out.name) AS imports_from,
+                   collect(DISTINCT incoming.name) AS imported_by
+            """,
+            name=module_name,
+        )
+        return rows[0] if rows else {"imports_from": [], "imported_by": []}
+
+    def inheritance(self, class_name: str) -> dict[str, Any]:
+        rows = self._run_query(
+            """
+            MATCH (c:Class {name:$name})
+            OPTIONAL MATCH (parent)-[:INHERITS]->(c)
+            OPTIONAL MATCH (c)-[:INHERITS]->(child)
+            RETURN parent.name AS parent, collect(DISTINCT child.name) AS children
+            """,
+            name=class_name,
+        )
+        return rows[0] if rows else {"parent": None, "children": []}
+
     def jobs(self) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         for job in self.job_manager.list_jobs():

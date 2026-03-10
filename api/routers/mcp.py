@@ -20,6 +20,16 @@ def stop() -> dict:
     return mcp_service.stop()
 
 
+@router.post("/restart")
+def restart() -> dict:
+    return mcp_service.restart()
+
+
 @router.get("/config/{provider}")
 def config(provider: str) -> dict:
     return mcp_service.provider_config(provider)
+
+
+@router.post("/test/{provider}")
+def test(provider: str) -> dict:
+    return mcp_service.test(provider)

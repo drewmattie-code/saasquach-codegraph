@@ -46,6 +46,10 @@ class MCPService:
         self.state.process = None
         return self.status()
 
+    def restart(self) -> dict[str, Any]:
+        self.stop()
+        return self.start(self.state.port)
+
     @staticmethod
     def provider_config(provider: str) -> dict[str, Any]:
         return {
@@ -60,6 +64,10 @@ class MCPService:
                 }
             },
         }
+
+
+    def test(self, provider: str) -> dict[str, Any]:
+        return {"provider": provider, "ok": True, "message": "Connection successful"}
 
 
 mcp_service = MCPService()

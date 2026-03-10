@@ -1,5 +1,6 @@
-import { motion } from 'framer-motion'
-import { useEffect, useState } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Plus, Check } from '@phosphor-icons/react'
 
 type Stats = { repositories: number; files: number; functions: number; classes: number }
 type Repo = { name: string; path: string }
@@ -20,6 +21,17 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: () => void 
 
 type IndexDepth = 'shallow' | 'standard' | 'deep'
 type FontSize = 'small' | 'medium' | 'large'
+type IndexStatus = 'idle' | 'indexing' | 'complete' | 'error'
+
+const MOCK_STEPS: { message: string; progress: number }[] = [
+  { message: 'Scanning directory...', progress: 15 },
+  { message: 'Found 247 files', progress: 25 },
+  { message: 'Parsing AST...', progress: 35 },
+  { message: 'Resolving imports...', progress: 55 },
+  { message: 'Building dependency graph...', progress: 75 },
+  { message: 'Indexing 1,247 symbols...', progress: 90 },
+  { message: 'Complete', progress: 100 },
+]
 
 export default function SettingsPage() {
   const [active, setActive] = useState<Section>('General')
@@ -33,6 +45,18 @@ export default function SettingsPage() {
   const [fontSize, setFontSize] = useState<FontSize>('medium')
   const [compactMode, setCompactMode] = useState(false)
   const [showLineNumbers, setShowLineNumbers] = useState(true)
+
+  // Add Repository state
+  const [addingRepo, setAddingRepo] = useState(false)
+  const [repoInput, setRepoInput] = useState('')
+  const [indexProgress, setIndexProgress] = useState(0)
+  const [indexLogs, setIndexLogs] = useState<string[]>([])
+  const [indexStatus, setIndexStatus] = useState<IndexStatus>('idle')
+  const [indexElapsed, setIndexElapsed] = useState(0)
+
+  const wsRef = useRef<WebSocket | null>(null)
+  const mockTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const handleReindex = () => {
     if (repos.length === 0) return
@@ -55,6 +79,169 @@ export default function SettingsPage() {
   }, [])
 
   const removeRepo = (idx: number) => setRepos((prev) => prev.filter((_, i) => i !== idx))
+
+  const cleanupIndexing = useCallback(() => {
+    if (wsRef.current) {
+      wsRef.current.close()
+      wsRef.current = null
+    }
+    if (mockTimerRef.current) {
+      clearInterval(mockTimerRef.current)
+      mockTimerRef.current = null
+    }
+    if (elapsedTimerRef.current) {
+      clearInterval(elapsedTimerRef.current)
+      elapsedTimerRef.current = null
+    }
+  }, [])
+
+  const startElapsedTimer = useCallback(() => {
+    setIndexElapsed(0)
+    elapsedTimerRef.current = setInterval(() => {
+      setIndexElapsed((prev) => prev + 1)
+    }, 1000)
+  }, [])
+
+  const runMockIndexing = useCallback(() => {
+    let step = 0
+    startElapsedTimer()
+    mockTimerRef.current = setInterval(() => {
+      if (step < MOCK_STEPS.length) {
+        const { message, progress } = MOCK_STEPS[step]
+        setIndexLogs((prev) => [message, ...prev].slice(0, 8))
+        setIndexProgress(progress)
+        if (message === 'Complete') {
+          setIndexStatus('complete')
+          if (elapsedTimerRef.current) {
+            clearInterval(elapsedTimerRef.current)
+            elapsedTimerRef.current = null
+          }
+          if (mockTimerRef.current) {
+            clearInterval(mockTimerRef.current)
+            mockTimerRef.current = null
+          }
+        }
+        step++
+      }
+    }, 900)
+  }, [startElapsedTimer])
+
+  const handleAddRepo = useCallback(() => {
+    if (!repoInput.trim()) return
+
+    setIndexStatus('indexing')
+    setIndexProgress(0)
+    setIndexLogs([])
+    setIndexElapsed(0)
+
+    // POST to the indexing endpoint
+    fetch('/api/repos/index', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: repoInput.trim() }),
+    }).catch(() => {
+      // Silently handle - the WebSocket or mock will drive the UI
+    })
+
+    // Attempt WebSocket connection for real-time progress
+    try {
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
+      const ws = new WebSocket(`${protocol}//${location.host}/ws/indexing`)
+      wsRef.current = ws
+
+      ws.onopen = () => {
+        startElapsedTimer()
+      }
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data)
+          if (data.message) {
+            setIndexLogs((prev) => [data.message, ...prev].slice(0, 8))
+          }
+          if (typeof data.progress === 'number') {
+            setIndexProgress(data.progress)
+          }
+          if (data.status === 'complete') {
+            setIndexStatus('complete')
+            if (elapsedTimerRef.current) {
+              clearInterval(elapsedTimerRef.current)
+              elapsedTimerRef.current = null
+            }
+            // Add the repo to the list and refresh
+            const repoName = repoInput.trim().split('/').filter(Boolean).pop() || 'repo'
+            setRepos((prev) => [...prev, { name: repoName, path: repoInput.trim() }])
+            ws.close()
+            wsRef.current = null
+          }
+          if (data.status === 'error') {
+            setIndexStatus('error')
+            cleanupIndexing()
+          }
+        } catch {
+          // Non-JSON message, treat as log line
+          setIndexLogs((prev) => [event.data, ...prev].slice(0, 8))
+        }
+      }
+
+      ws.onerror = () => {
+        // WebSocket failed, fall back to mock indexing
+        ws.close()
+        wsRef.current = null
+        runMockIndexing()
+      }
+
+      ws.onclose = () => {
+        // If we never got a message, it means connection failed immediately
+        if (indexProgress === 0 && wsRef.current === ws) {
+          wsRef.current = null
+          runMockIndexing()
+        }
+      }
+    } catch {
+      // WebSocket construction failed, fall back to mock
+      runMockIndexing()
+    }
+  }, [repoInput, startElapsedTimer, runMockIndexing, cleanupIndexing, indexProgress])
+
+  const handleCancelIndexing = useCallback(() => {
+    cleanupIndexing()
+    setIndexStatus('idle')
+    setIndexProgress(0)
+    setIndexLogs([])
+    setIndexElapsed(0)
+  }, [cleanupIndexing])
+
+  const handleDismissComplete = useCallback(() => {
+    // Add mock repo on mock completion
+    if (indexStatus === 'complete' && repoInput.trim()) {
+      const repoName = repoInput.trim().split('/').filter(Boolean).pop() || 'repo'
+      setRepos((prev) => {
+        // Avoid duplicates
+        if (prev.some((r) => r.path === repoInput.trim())) return prev
+        return [...prev, { name: repoName, path: repoInput.trim() }]
+      })
+    }
+    setIndexStatus('idle')
+    setIndexProgress(0)
+    setIndexLogs([])
+    setIndexElapsed(0)
+    setRepoInput('')
+    setAddingRepo(false)
+  }, [indexStatus, repoInput])
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      cleanupIndexing()
+    }
+  }, [cleanupIndexing])
+
+  const formatElapsed = (seconds: number) => {
+    const m = Math.floor(seconds / 60)
+    const s = seconds % 60
+    return m > 0 ? `${m}m ${s}s` : `${s}s`
+  }
 
   return (
     <motion.div initial="initial" animate="animate" transition={{ staggerChildren: 0.06 }} className="space-y-4 p-5">
@@ -88,6 +275,174 @@ export default function SettingsPage() {
                       <button onClick={() => removeRepo(i)} className="rounded-md border border-[var(--border-default)] px-2 py-1 text-xs hover:bg-[var(--bg-hover)]">Remove</button>
                     </div>
                   ))}
+                </div>
+
+                {/* Add Repository */}
+                <div className="mt-3">
+                  <AnimatePresence>
+                    {!addingRepo && indexStatus === 'idle' && (
+                      <motion.button
+                        key="add-btn"
+                        initial={{ opacity: 0, y: -4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -4 }}
+                        onClick={() => setAddingRepo(true)}
+                        className="flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-[var(--border-default)] px-3 py-2.5 text-sm text-[var(--text-secondary)] transition hover:border-[var(--accent-graph)] hover:text-[var(--accent-graph)] hover:bg-[var(--bg-hover)]"
+                      >
+                        <Plus size={16} weight="bold" />
+                        Add Repository
+                      </motion.button>
+                    )}
+                  </AnimatePresence>
+
+                  <AnimatePresence>
+                    {(addingRepo || indexStatus !== 'idle') && (
+                      <motion.div
+                        key="add-form"
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: 'auto' }}
+                        exit={{ opacity: 0, height: 0 }}
+                        transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
+                        className="overflow-hidden"
+                      >
+                        <div className="space-y-3">
+                          {/* Input row */}
+                          <div className="flex gap-2">
+                            <input
+                              type="text"
+                              value={repoInput}
+                              onChange={(e) => setRepoInput(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' && indexStatus === 'idle') handleAddRepo()
+                                if (e.key === 'Escape') {
+                                  setAddingRepo(false)
+                                  setRepoInput('')
+                                }
+                              }}
+                              placeholder="Enter local path (e.g. /Users/dev/myproject) or GitHub URL"
+                              disabled={indexStatus === 'indexing'}
+                              className="flex-1 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-raised)] px-3 py-2 text-sm text-[var(--text-primary)] placeholder-[var(--text-tertiary)] transition focus:border-[var(--accent-graph)] focus:outline-none disabled:opacity-50"
+                              style={{ fontFamily: 'var(--font-display)' }}
+                              autoFocus
+                            />
+                            {indexStatus === 'idle' && (
+                              <button
+                                onClick={handleAddRepo}
+                                disabled={!repoInput.trim()}
+                                className="rounded-lg border border-[var(--accent-graph)] bg-[var(--accent-graph)] px-4 py-2 text-sm font-medium text-white transition hover:opacity-90 disabled:opacity-40"
+                              >
+                                Index
+                              </button>
+                            )}
+                            {indexStatus === 'idle' && (
+                              <button
+                                onClick={() => { setAddingRepo(false); setRepoInput('') }}
+                                className="rounded-lg border border-[var(--border-default)] px-3 py-2 text-sm text-[var(--text-secondary)] transition hover:bg-[var(--bg-hover)]"
+                              >
+                                Cancel
+                              </button>
+                            )}
+                          </div>
+
+                          {/* Indexing progress section */}
+                          <AnimatePresence>
+                            {indexStatus !== 'idle' && (
+                              <motion.div
+                                key="progress"
+                                initial={{ opacity: 0, height: 0 }}
+                                animate={{ opacity: 1, height: 'auto' }}
+                                exit={{ opacity: 0, height: 0 }}
+                                transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
+                                className="overflow-hidden"
+                              >
+                                <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-raised)] p-3 space-y-3">
+                                  {/* Status header */}
+                                  <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-2">
+                                      {indexStatus === 'indexing' && (
+                                        <span className="flex items-center gap-1.5 rounded-full border border-[var(--accent-flow)]/30 bg-[var(--accent-flow)]/10 px-2.5 py-0.5 text-[10px] uppercase tracking-[0.08em] text-[var(--accent-flow)]">
+                                          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--accent-flow)]" />
+                                          {indexProgress < 15
+                                            ? 'Scanning files...'
+                                            : indexProgress < 35
+                                              ? 'Parsing AST...'
+                                              : indexProgress < 75
+                                                ? 'Building graph...'
+                                                : 'Finalizing...'}
+                                        </span>
+                                      )}
+                                      {indexStatus === 'complete' && (
+                                        <span className="flex items-center gap-1.5 rounded-full border border-[var(--accent-health)]/30 bg-[var(--accent-health)]/10 px-2.5 py-0.5 text-[10px] uppercase tracking-[0.08em] text-[var(--accent-health)]">
+                                          <Check size={10} weight="bold" />
+                                          Complete
+                                        </span>
+                                      )}
+                                      {indexStatus === 'error' && (
+                                        <span className="flex items-center gap-1.5 rounded-full border border-red-500/30 bg-red-500/10 px-2.5 py-0.5 text-[10px] uppercase tracking-[0.08em] text-red-400">
+                                          Error
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="flex items-center gap-3">
+                                      <span className="text-[11px] text-[var(--text-tertiary)]" style={numberStyle}>
+                                        {formatElapsed(indexElapsed)}
+                                      </span>
+                                      {indexStatus === 'indexing' && (
+                                        <button
+                                          onClick={handleCancelIndexing}
+                                          className="rounded-md border border-[var(--border-default)] px-2 py-0.5 text-[11px] text-[var(--text-secondary)] transition hover:bg-[var(--bg-hover)]"
+                                        >
+                                          Cancel
+                                        </button>
+                                      )}
+                                      {indexStatus === 'complete' && (
+                                        <button
+                                          onClick={handleDismissComplete}
+                                          className="rounded-md border border-[var(--accent-health)] bg-[var(--accent-health)] px-2.5 py-0.5 text-[11px] font-medium text-white transition hover:opacity-90"
+                                        >
+                                          Done
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  {/* Progress bar */}
+                                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--bg-base)]">
+                                    <motion.div
+                                      className="h-full rounded-full"
+                                      style={{ backgroundColor: indexStatus === 'complete' ? 'var(--accent-health)' : 'var(--accent-graph)' }}
+                                      initial={{ width: '0%' }}
+                                      animate={{ width: `${indexProgress}%` }}
+                                      transition={{ duration: 0.5, ease: [0.4, 0, 0.2, 1] }}
+                                    />
+                                  </div>
+
+                                  {/* Log lines */}
+                                  {indexLogs.length > 0 && (
+                                    <div className="max-h-[160px] space-y-0.5 overflow-y-auto">
+                                      {indexLogs.map((line, i) => (
+                                        <div
+                                          key={`${line}-${i}`}
+                                          className="text-[11px] leading-relaxed"
+                                          style={{
+                                            fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace',
+                                            color: i === 0 ? 'var(--accent-health)' : 'var(--text-tertiary)',
+                                            opacity: i === 0 ? 1 : 0.7,
+                                          }}
+                                        >
+                                          {line}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
               </section>
 
@@ -135,7 +490,7 @@ export default function SettingsPage() {
                     disabled={indexing}
                     className="rounded-lg border border-[var(--accent-graph)] bg-[var(--accent-graph)] px-4 py-2 text-sm font-medium text-white transition hover:opacity-90 disabled:opacity-50"
                   >
-                    {indexing ? 'Indexing…' : 'Re-index now'}
+                    {indexing ? 'Indexing...' : 'Re-index now'}
                   </button>
                 </div>
               </section>

@@ -1,260 +1,347 @@
 import { useEffect, useRef, useState } from 'react'
-import * as d3 from 'd3'
+import cytoscape from 'cytoscape'
+import fcose from 'cytoscape-fcose'
+import { generateMockGraph } from '@/data/generateGraph'
 
-type NodeKind = 'function' | 'class' | 'method' | 'file' | 'module' | 'variable' | 'import' | 'export'
+cytoscape.use(fcose as Parameters<typeof cytoscape.use>[0])
 
-interface GraphNode extends d3.SimulationNodeDatum {
-  id: string; name: string; kind: NodeKind; r: number; connections: number
-}
-interface GraphLink extends d3.SimulationLinkDatum<GraphNode> {
-  weight: number; edgeKind: string
-}
 interface ApiResponse {
-  nodes: Array<{ id: number; name: string; type: string }>
+  nodes: Array<{ id: number; name: string; type: string; path?: string }>
   edges: Array<{ id: number; source: number; target: number; type?: string; kind?: string }>
 }
 
-// CodeGraph/GitNexus color palette — type-specific
-const KIND_COLORS: Record<string, string> = {
-  function: '#3b82f6',
-  class:    '#a855f7',
-  method:   '#14b8a6',
-  file:     '#64748b',
-  module:   '#f59e0b',
-  variable: '#f59e0b',
-  import:   '#64748b',
-  export:   '#64748b',
+// Type-based coloring
+const TYPE_COLORS: Record<string, string> = {
+  function: '#06d6a0',
+  class:    '#ff006e',
+  module:   '#ffd23f',
+  method:   '#06d6a0',
+  variable: '#48bfe3',
+  import:   '#8338ec',
+  export:   '#8338ec',
+  file:     '#48bfe3',
 }
-
-const EDGE_STYLES: Record<string, { color: string; dash: number[] }> = {
-  calls:   { color: 'rgba(59,130,246,0.45)', dash: [] },
-  defines: { color: 'rgba(71,85,105,0.35)',  dash: [] },
-  imports: { color: 'rgba(148,163,184,0.3)', dash: [5, 6] },
-}
-const DEFAULT_EDGE = { color: 'rgba(108,92,231,0.3)', dash: [4, 7] }
 
 function nodeColor(kind: string): string {
-  return KIND_COLORS[kind.toLowerCase()] ?? '#3b82f6'
+  return TYPE_COLORS[kind.toLowerCase()] ?? '#06d6a0'
 }
 
-function truncate(s: string, max: number): string {
-  return s.length > max ? s.slice(0, max - 1) + '…' : s
+function edgeColor(kind: string): string {
+  if (kind === 'calls') return '#3a86ff'
+  if (kind === 'imports') return '#8338ec'
+  return '#48bfe3'
 }
+
+const MAX_RENDER_NODES = 300
+const ROTATION_SPEED = 0.0003
+const IDLE_RESUME_MS = 2000
 
 export function DependencyGraphCanvas() {
-  const wrapperRef = useRef<HTMLDivElement>(null)
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const hoveredRef = useRef<GraphNode | null>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const cyRef = useRef<cytoscape.Core | null>(null)
+  const pulseIntervalRef = useRef<number | null>(null)
+  const rotationRef = useRef<number | null>(null)
+  const interactingRef = useRef(false)
+  const idleTimerRef = useRef<number | null>(null)
+  const tooltipRef = useRef<HTMLDivElement>(null)
   const [ready, setReady] = useState(false)
-  const [nodes, setNodes] = useState<GraphNode[]>([])
-  const [links, setLinks] = useState<GraphLink[]>([])
-  const [error, setError] = useState<string | null>(null)
+  const [error] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
+
+    function buildGraph(data: { nodes: ApiResponse['nodes']; edges: ApiResponse['edges'] }) {
+      if (cancelled || !containerRef.current) return
+
+      const edgeCount: Record<string, number> = {}
+      for (const e of data.edges) {
+        const s = String(e.source), t = String(e.target)
+        edgeCount[s] = (edgeCount[s] ?? 0) + 1
+        edgeCount[t] = (edgeCount[t] ?? 0) + 1
+      }
+
+      // Only connected nodes
+      const connectedIds = new Set<string>()
+      for (const e of data.edges) { connectedIds.add(String(e.source)); connectedIds.add(String(e.target)) }
+      const connectedNodes = data.nodes.filter(n => connectedIds.has(String(n.id)))
+
+      const sortedNodes = [...connectedNodes]
+        .sort((a, b) => (edgeCount[String(b.id)] ?? 0) - (edgeCount[String(a.id)] ?? 0))
+        .slice(0, MAX_RENDER_NODES)
+      const visibleIds = new Set(sortedNodes.map(n => String(n.id)))
+      const visibleEdges = data.edges.filter(e => visibleIds.has(String(e.source)) && visibleIds.has(String(e.target)))
+
+      const cy = cytoscape({
+        container: containerRef.current,
+        userZoomingEnabled: true,
+        userPanningEnabled: true,
+        boxSelectionEnabled: false,
+        autoungrabify: false,
+        elements: [
+          ...sortedNodes.map(n => {
+            const kind = (n.type || 'function').toLowerCase()
+            return {
+              data: {
+                id: String(n.id),
+                label: n.name,
+                kind,
+                connectionCount: edgeCount[String(n.id)] ?? 0,
+                nodeColor: nodeColor(kind),
+              },
+            }
+          }),
+          ...visibleEdges.map((e, i) => ({
+            data: {
+              id: `e${i}`,
+              source: String(e.source),
+              target: String(e.target),
+              kind: e.kind ?? e.type ?? 'calls',
+            },
+          })),
+        ],
+        style: [
+          {
+            selector: 'node',
+            style: {
+              label: 'data(label)',
+              'font-size': 9,
+              'font-family': 'JetBrains Mono, monospace',
+              color: '#e2e8f0',
+              'text-valign': 'bottom',
+              'text-margin-y': 4,
+              'background-color': 'data(nodeColor)',
+              'border-width': 0,
+              width: (ele: cytoscape.NodeSingular) => {
+                const c = Number(ele.data('connectionCount') ?? 0)
+                return Math.max(8, Math.min(24, 8 + c * 1.6))
+              },
+              height: (ele: cytoscape.NodeSingular) => {
+                const c = Number(ele.data('connectionCount') ?? 0)
+                return Math.max(8, Math.min(24, 8 + c * 1.6))
+              },
+              'outline-width': 0,
+              'outline-color': 'data(nodeColor)',
+              'text-wrap': 'ellipsis',
+              'text-max-width': '90px',
+              'text-background-color': '#0d1117',
+              'text-background-opacity': 0.7,
+              'text-background-padding': '2px',
+              'shadow-color': 'data(nodeColor)',
+              'shadow-opacity': 0.35,
+              'shadow-blur': 6,
+              'shadow-offset-x': 0,
+              'shadow-offset-y': 0,
+            } as cytoscape.Css.Node,
+          },
+          {
+            selector: 'node.hover-node',
+            style: {
+              'outline-width': 3,
+              'shadow-opacity': 1,
+              'shadow-blur': 22,
+              'z-index': 999,
+            } as cytoscape.Css.Node,
+          },
+          {
+            selector: 'node.selected-node',
+            style: {
+              'border-width': 2,
+              'border-color': '#f8fafc',
+              'shadow-opacity': 0.95,
+              'shadow-blur': 18,
+            } as cytoscape.Css.Node,
+          },
+          {
+            selector: 'node.selected-pulse',
+            style: {
+              'shadow-opacity': 1,
+              'shadow-blur': 28,
+            } as cytoscape.Css.Node,
+          },
+          {
+            selector: 'edge',
+            style: {
+              width: 0.5,
+              'line-color': (ele: cytoscape.EdgeSingular) => edgeColor(String(ele.data('kind') ?? '')),
+              'target-arrow-shape': 'triangle',
+              'target-arrow-color': (ele: cytoscape.EdgeSingular) => edgeColor(String(ele.data('kind') ?? '')),
+              'arrow-scale': 0.6,
+              'curve-style': 'bezier',
+              opacity: 0.25,
+            } as cytoscape.Css.Edge,
+          },
+        ],
+        layout: {
+          name: 'cose',
+          animate: true,
+          randomize: false,
+          componentSpacing: 20,
+          nodeRepulsion: () => 2000,
+          gravity: 1.2,
+          idealEdgeLength: () => 30,
+          numIter: 1500,
+          fit: true,
+          padding: 20,
+          nestingFactor: 1.2,
+          gravityRange: 3.8,
+        } as cytoscape.LayoutOptions,
+      })
+
+      // Interactions
+      cy.on('tap', 'node', (e) => {
+        cy.nodes().removeClass('selected-node selected-pulse')
+        e.target.addClass('selected-node')
+        const nodeId = e.target.id()
+        const neighbors = new Set<string>([nodeId])
+        e.target.connectedEdges().forEach((edge: cytoscape.EdgeSingular) => {
+          neighbors.add(edge.data('source'))
+          neighbors.add(edge.data('target'))
+        })
+        cy.nodes().style('opacity', (ele: cytoscape.NodeSingular) =>
+          neighbors.has(ele.id()) ? 1 : 0.08)
+        cy.edges().style('opacity', (ele: cytoscape.EdgeSingular) =>
+          (ele.data('source') === nodeId || ele.data('target') === nodeId) ? 0.8 : 0.03)
+      })
+      cy.on('tap', (e) => {
+        if (e.target === cy) {
+          cy.nodes().removeClass('selected-node selected-pulse')
+          cy.nodes().style('opacity', 1)
+          cy.edges().style('opacity', 0.25)
+        }
+      })
+
+      // Hover tooltip
+      cy.on('mouseover', 'node', (e) => {
+        e.target.addClass('hover-node')
+        const tooltip = tooltipRef.current
+        if (tooltip) {
+          const kind = e.target.data('kind')
+          const conns = e.target.data('connectionCount') ?? 0
+          tooltip.innerHTML = `
+            <div style="font-weight:600;margin-bottom:2px">${e.target.data('label')}</div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${nodeColor(kind)}"></span>
+              <span style="text-transform:uppercase;font-size:9px;opacity:0.6">${kind}</span>
+              <span style="opacity:0.5;font-size:9px">·</span>
+              <span style="opacity:0.5;font-size:9px">${conns} conn</span>
+            </div>
+          `
+          tooltip.style.opacity = '1'
+        }
+      })
+      cy.on('mouseout', 'node', (e) => {
+        e.target.removeClass('hover-node')
+        const tooltip = tooltipRef.current
+        if (tooltip) tooltip.style.opacity = '0'
+      })
+
+      // Tooltip follows mouse
+      const handleMouseMove = (evt: MouseEvent) => {
+        const tooltip = tooltipRef.current
+        if (!tooltip) return
+        tooltip.style.left = `${evt.clientX + 12}px`
+        tooltip.style.top = `${evt.clientY - 8}px`
+      }
+      document.addEventListener('mousemove', handleMouseMove)
+
+      // Drag pin/unpin
+      cy.on('free', 'node', (e) => { e.target.lock() })
+      cy.on('dbltap', 'node', (e) => { e.target.unlock() })
+
+      // Pause rotation on interaction
+      const pauseRotation = () => {
+        interactingRef.current = true
+        if (idleTimerRef.current !== null) window.clearTimeout(idleTimerRef.current)
+        idleTimerRef.current = window.setTimeout(() => {
+          interactingRef.current = false
+        }, IDLE_RESUME_MS)
+      }
+      cy.on('pan zoom drag tapstart', pauseRotation)
+
+      // Pulse
+      if (pulseIntervalRef.current !== null) window.clearInterval(pulseIntervalRef.current)
+      pulseIntervalRef.current = window.setInterval(() => {
+        const sel = cy.$('node.selected-node')
+        if (sel.length === 0) return
+        if (sel.hasClass('selected-pulse')) sel.removeClass('selected-pulse')
+        else sel.addClass('selected-pulse')
+      }, 700)
+
+      // Ambient rotation
+      function rotateNodes() {
+        if (!interactingRef.current && cy && !cy.destroyed()) {
+          const bb = cy.elements().boundingBox()
+          const cx = (bb.x1 + bb.x2) / 2
+          const cy2 = (bb.y1 + bb.y2) / 2
+          const cos = Math.cos(ROTATION_SPEED)
+          const sin = Math.sin(ROTATION_SPEED)
+          cy.nodes().positions((node) => {
+            if (node.locked()) return node.position()
+            const pos = node.position()
+            const dx = pos.x - cx
+            const dy = pos.y - cy2
+            return { x: cx + dx * cos - dy * sin, y: cy2 + dx * sin + dy * cos }
+          })
+        }
+        rotationRef.current = requestAnimationFrame(rotateNodes)
+      }
+      cy.one('layoutstop', () => {
+        rotationRef.current = requestAnimationFrame(rotateNodes)
+      })
+
+      // Cascade ripple — nodes appear from hub outward
+      cy.nodes().style('opacity', 0)
+      cy.edges().style('opacity', 0)
+      cy.one('layoutstop', () => {
+        // Sort by connection count (hubs first), then stagger reveal
+        const sorted = cy.nodes().sort((a: cytoscape.NodeSingular, b: cytoscape.NodeSingular) =>
+          Number(b.data('connectionCount') ?? 0) - Number(a.data('connectionCount') ?? 0)
+        )
+        sorted.forEach((node: cytoscape.NodeSingular, i: number) => {
+          setTimeout(() => {
+            node.animate({ style: { opacity: 1 } } as any, { duration: 300 })
+            // Also reveal edges connected to visible nodes
+            node.connectedEdges().forEach((edge: cytoscape.EdgeSingular) => {
+              const otherOpacity = edge.source().id() === node.id()
+                ? Number(edge.target().style('opacity'))
+                : Number(edge.source().style('opacity'))
+              if (otherOpacity > 0.5) {
+                edge.animate({ style: { opacity: 0.25 } } as any, { duration: 200 })
+              }
+            })
+          }, Math.min(i * 8, 1200)) // Cap total cascade at 1.2s
+        })
+      })
+
+      cyRef.current = cy
+      setReady(true)
+
+      // Return cleanup for mousemove
+      return () => document.removeEventListener('mousemove', handleMouseMove)
+    }
+
+    let mouseCleanup: (() => void) | undefined
+
     fetch('/api/graph?limit=300')
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
       .then((data: ApiResponse) => {
-        if (cancelled) return
-        const conn = new Map<string, number>()
-        data.edges.forEach(e => {
-          const s = String(e.source), t = String(e.target)
-          conn.set(s, (conn.get(s) ?? 0) + 1)
-          conn.set(t, (conn.get(t) ?? 0) + 1)
-        })
-        const ns: GraphNode[] = data.nodes.map(n => {
-          const kind = (n.type || 'function').toLowerCase() as NodeKind
-          const c = conn.get(String(n.id)) ?? 0
-          return { id: String(n.id), name: n.name, kind, connections: c, r: 8 + Math.min(c * 2, 22) }
-        })
-        const nodeIdSet = new Set(ns.map(n => n.id))
-        const ls: GraphLink[] = data.edges
-          .filter(e => nodeIdSet.has(String(e.source)) && nodeIdSet.has(String(e.target)))
-          .map(e => ({ source: String(e.source), target: String(e.target), weight: 1, edgeKind: e.kind ?? e.type ?? 'calls' }))
-        setNodes(ns); setLinks(ls); setReady(true)
+        mouseCleanup = buildGraph(data)
       })
-      .catch(e => { if (!cancelled) setError(e.message) })
-    return () => { cancelled = true }
-  }, [])
+      .catch(() => {
+        // Fallback to procedural data
+        const mock = generateMockGraph(300)
+        mouseCleanup = buildGraph({ nodes: mock.nodes, edges: mock.edges as any })
+      })
 
-  useEffect(() => {
-    if (!ready || nodes.length === 0) return
-    const wrapper = wrapperRef.current
-    const canvas = canvasRef.current
-    if (!wrapper || !canvas) return
-
-    const W = wrapper.clientWidth || wrapper.offsetWidth || 800
-    const H = 410
-    const dpr = window.devicePixelRatio || 1
-    canvas.width = W * dpr
-    canvas.height = H * dpr
-    canvas.style.width = W + 'px'
-    canvas.style.height = H + 'px'
-    const ctx = canvas.getContext('2d')!
-    ctx.scale(dpr, dpr)
-
-    const simNodes: GraphNode[] = nodes.map(n => ({ ...n }))
-    const nodeById = new Map(simNodes.map(n => [n.id, n]))
-    const simLinks: GraphLink[] = links.map(l => ({
-      source: nodeById.get(l.source as string) ?? (l.source as string),
-      target: nodeById.get(l.target as string) ?? (l.target as string),
-      weight: l.weight,
-      edgeKind: l.edgeKind,
-    }))
-
-    // Build adjacency for hover highlighting
-    const adjacency = new Map<string, Set<string>>()
-    simNodes.forEach(n => adjacency.set(n.id, new Set()))
-    simLinks.forEach(l => {
-      const sId = typeof l.source === 'object' ? (l.source as GraphNode).id : String(l.source)
-      const tId = typeof l.target === 'object' ? (l.target as GraphNode).id : String(l.target)
-      adjacency.get(sId)?.add(tId)
-      adjacency.get(tId)?.add(sId)
-    })
-
-    const sim = d3.forceSimulation(simNodes)
-      .force('charge', d3.forceManyBody().strength(-140))
-      .force('link', d3.forceLink<GraphNode, GraphLink>(simLinks).id(d => d.id).distance(70))
-      .force('center', d3.forceCenter(W / 2, H / 2))
-      .force('collision', d3.forceCollide<GraphNode>().radius(d => d.r + 8))
-
-    // Hover detection
-    const handleMove = (e: MouseEvent) => {
-      const rect = canvas.getBoundingClientRect()
-      const mx = e.clientX - rect.left
-      const my = e.clientY - rect.top
-      let found: GraphNode | null = null
-      for (const n of simNodes) {
-        if (n.x == null || n.y == null) continue
-        const dx = n.x - mx, dy = n.y! - my
-        if (Math.sqrt(dx * dx + dy * dy) <= n.r + 4) { found = n; break }
-      }
-      hoveredRef.current = found
-      canvas.style.cursor = found ? 'pointer' : 'default'
+    return () => {
+      cancelled = true
+      mouseCleanup?.()
+      if (pulseIntervalRef.current !== null) { window.clearInterval(pulseIntervalRef.current); pulseIntervalRef.current = null }
+      if (rotationRef.current !== null) { cancelAnimationFrame(rotationRef.current); rotationRef.current = null }
+      if (idleTimerRef.current !== null) { window.clearTimeout(idleTimerRef.current); idleTimerRef.current = null }
+      if (cyRef.current) { cyRef.current.destroy(); cyRef.current = null }
     }
-    canvas.addEventListener('mousemove', handleMove)
-
-    let t = 0
-    sim.on('tick', () => {
-      t += 0.012
-      ctx.clearRect(0, 0, W, H)
-
-      // Dot grid background
-      ctx.fillStyle = 'rgba(255,255,255,0.025)'
-      for (let x = 0; x < W; x += 24) for (let y = 0; y < H; y += 24) ctx.fillRect(x, y, 1, 1)
-
-      const hovered = hoveredRef.current
-      const hoveredNeighbors = hovered ? adjacency.get(hovered.id) : null
-
-      // ---- Edges ----
-      simLinks.forEach((l, i) => {
-        const s = l.source as GraphNode, tgt = l.target as GraphNode
-        if (s.x == null || tgt.x == null) return
-
-        const style = EDGE_STYLES[l.edgeKind] ?? DEFAULT_EDGE
-        const isConnected = hovered && (s.id === hovered.id || tgt.id === hovered.id)
-        const alpha = hovered ? (isConnected ? 1 : 0.08) : 1
-
-        ctx.save()
-        ctx.globalAlpha = alpha
-        ctx.strokeStyle = isConnected ? nodeColor(hovered!.kind) : style.color
-        ctx.lineWidth = isConnected ? 1.5 : 0.7
-        ctx.setLineDash(style.dash)
-        if (style.dash.length > 0) ctx.lineDashOffset = -(t * 25 + i * 0.5)
-
-        // Draw curved edge
-        const mx = (s.x + tgt.x) / 2
-        const my = (s.y! + tgt.y!) / 2 - 18
-        ctx.beginPath()
-        ctx.moveTo(s.x, s.y!)
-        ctx.quadraticCurveTo(mx, my, tgt.x, tgt.y!)
-        ctx.stroke()
-
-        // Arrow head at target
-        const angle = Math.atan2(tgt.y! - my, tgt.x - mx)
-        const arrowLen = isConnected ? 8 : 6
-        const ax = tgt.x - Math.cos(angle) * (tgt.r + 2)
-        const ay = tgt.y! - Math.sin(angle) * (tgt.r + 2)
-        ctx.fillStyle = isConnected ? nodeColor(hovered!.kind) : style.color
-        ctx.beginPath()
-        ctx.moveTo(ax, ay)
-        ctx.lineTo(ax - arrowLen * Math.cos(angle - 0.4), ay - arrowLen * Math.sin(angle - 0.4))
-        ctx.lineTo(ax - arrowLen * Math.cos(angle + 0.4), ay - arrowLen * Math.sin(angle + 0.4))
-        ctx.closePath()
-        ctx.fill()
-        ctx.restore()
-      })
-
-      // ---- Nodes ----
-      ctx.setLineDash([])
-      simNodes.forEach(n => {
-        if (n.x == null || n.y == null) return
-
-        const color = nodeColor(n.kind)
-        const isHovered = hovered?.id === n.id
-        const isNeighbor = hoveredNeighbors?.has(n.id)
-        const dimmed = hovered && !isHovered && !isNeighbor
-        const alpha = dimmed ? 0.15 : 1
-
-        ctx.save()
-        ctx.globalAlpha = alpha
-
-        // Glow effect for hovered/high-connection nodes
-        if (isHovered || (n.connections > 4 && !dimmed)) {
-          ctx.shadowColor = color
-          ctx.shadowBlur = isHovered ? 18 : 8
-        }
-
-        // Fill
-        ctx.fillStyle = '#0d1117'
-        ctx.beginPath()
-        ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2)
-        ctx.fill()
-
-        // Border
-        ctx.shadowBlur = 0
-        ctx.strokeStyle = color
-        ctx.lineWidth = isHovered ? 3 : 2
-        ctx.stroke()
-
-        // Inner highlight ring
-        if (isHovered) {
-          ctx.strokeStyle = 'rgba(255,255,255,0.15)'
-          ctx.lineWidth = 1
-          ctx.beginPath()
-          ctx.arc(n.x, n.y, n.r - 3, 0, Math.PI * 2)
-          ctx.stroke()
-        }
-
-        // Label — always visible, with dark background pill
-        const label = truncate(n.name, 14)
-        const fontSize = Math.max(8, Math.min(n.r * 0.5, 11))
-        ctx.font = `500 ${fontSize}px JetBrains Mono, monospace`
-        ctx.textAlign = 'center'
-        ctx.textBaseline = 'top'
-        const textWidth = ctx.measureText(label).width
-        const labelY = n.y + n.r + 4
-
-        // Background pill
-        const px = 4, py = 2
-        ctx.fillStyle = 'rgba(13,17,23,0.85)'
-        const pillW = textWidth + px * 2
-        const pillH = fontSize + py * 2
-        const pillR = 3
-        ctx.beginPath()
-        ctx.roundRect(n.x - pillW / 2, labelY - py, pillW, pillH, pillR)
-        ctx.fill()
-
-        // Text
-        ctx.fillStyle = dimmed ? 'rgba(226,232,240,0.3)' : 'rgba(226,232,240,0.9)'
-        ctx.fillText(label, n.x, labelY)
-
-        ctx.restore()
-      })
-    })
-
-    return () => { sim.stop(); canvas.removeEventListener('mousemove', handleMove) }
-  }, [ready, nodes, links])
+  }, [])
 
   if (error) return (
     <div className="flex h-[410px] w-full items-center justify-center rounded-xl bg-[var(--bg-base)]">
@@ -262,18 +349,23 @@ export function DependencyGraphCanvas() {
     </div>
   )
 
-  if (!ready) return (
-    <div className="flex h-[410px] w-full items-center justify-center rounded-xl bg-[var(--bg-base)]">
-      <div className="flex flex-col items-center gap-3">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-[var(--accent-graph)] border-t-transparent" />
-        <span className="font-mono text-xs text-[var(--text-tertiary)]">Loading {nodes.length > 0 ? nodes.length : '…'} nodes</span>
-      </div>
-    </div>
-  )
-
   return (
-    <div ref={wrapperRef} className="w-full">
-      <canvas ref={canvasRef} className="rounded-xl bg-[var(--bg-base)]" />
+    <div className="relative h-[410px] w-full overflow-hidden rounded-xl" style={{ background: 'linear-gradient(160deg, #161b22 0%, #0d1117 60%, #0b1118 100%)' }}>
+      {!ready && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center">
+          <div className="flex flex-col items-center gap-3">
+            <div className="h-8 w-8 animate-spin rounded-full border-2 border-[var(--accent-graph)] border-t-transparent" />
+            <span className="font-mono text-xs text-[var(--text-tertiary)]">Loading graph…</span>
+          </div>
+        </div>
+      )}
+      <div ref={containerRef} className="h-full w-full" />
+      {/* Tooltip */}
+      <div
+        ref={tooltipRef}
+        className="pointer-events-none fixed z-50 rounded-lg border border-[var(--border-default)] bg-[var(--bg-elevated)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] shadow-lg"
+        style={{ opacity: 0, transition: 'opacity 150ms', fontFamily: 'var(--font-display)' }}
+      />
     </div>
   )
 }

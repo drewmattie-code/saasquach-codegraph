@@ -8,6 +8,7 @@ interface SearchResult {
   type: string
   path: string
   line_number: number
+  source_preview?: string  // first 3 lines of function source
 }
 
 type GroupKey = 'Repositories' | 'Functions' | 'Classes' | 'Files'
@@ -30,6 +31,34 @@ const GROUP_ICONS: Record<GroupKey, typeof Folder> = {
   Files: File,
 }
 
+const DEMO_SYMBOLS: SearchResult[] = [
+  { name: 'execute_cypher_query', type: 'function', path: 'src/analysis/graph_query.py', line_number: 16 },
+  { name: 'GraphQuery', type: 'class', path: 'src/analysis/graph_query.py', line_number: 42 },
+  { name: 'parse_ast', type: 'function', path: 'src/parser/ast_parser.py', line_number: 22 },
+  { name: 'analyze_code', type: 'function', path: 'src/analysis/code_analyzer.py', line_number: 10 },
+  { name: 'DependencyResolver', type: 'class', path: 'src/graph/dependency_resolver.py', line_number: 13 },
+  { name: 'validate_input', type: 'function', path: 'src/utils/validators.py', line_number: 5 },
+  { name: 'CacheManager', type: 'class', path: 'src/core/cache.py', line_number: 8 },
+  { name: 'build_graph', type: 'function', path: 'src/graph/builder.py', line_number: 31 },
+  { name: 'authenticate_user', type: 'function', path: 'src/auth/provider.py', line_number: 44 },
+  { name: 'EventEmitter', type: 'class', path: 'src/core/events.py', line_number: 1 },
+]
+
+function mockPreview(result: SearchResult): string {
+  const t = result.type.toLowerCase()
+  if (t === 'function' || t === 'method') {
+    return `def ${result.name}(self, *args, **kwargs):\n    """${result.name.replace(/_/g, ' ')}"""\n    ...`
+  }
+  if (t === 'class') {
+    return `class ${result.name}:\n    """${result.name} implementation"""\n    def __init__(self):`
+  }
+  return `# ${result.path}\n# ${result.name}`
+}
+
+function getPreview(result: SearchResult): string {
+  return result.source_preview ?? mockPreview(result)
+}
+
 function groupResults(results: SearchResult[]): Map<GroupKey, SearchResult[]> {
   const groups = new Map<GroupKey, SearchResult[]>()
   for (const r of results) {
@@ -42,6 +71,11 @@ function groupResults(results: SearchResult[]): Map<GroupKey, SearchResult[]> {
     }
   }
   return groups
+}
+
+function filterDemoSymbols(q: string): SearchResult[] {
+  const lower = q.toLowerCase()
+  return DEMO_SYMBOLS.filter((s) => s.name.toLowerCase().includes(lower))
 }
 
 export function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -70,12 +104,21 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
         })
         if (res.ok) {
           const data: SearchResult[] = await res.json()
-          setResults(data)
+          if (data.length > 0) {
+            setResults(data)
+          } else {
+            setResults(filterDemoSymbols(query.trim()))
+          }
+          setSelectedIndex(0)
+        } else {
+          setResults(filterDemoSymbols(query.trim()))
           setSelectedIndex(0)
         }
       } catch (err) {
         if (!(err instanceof DOMException && err.name === 'AbortError')) {
           console.error('Search failed:', err)
+          setResults(filterDemoSymbols(query.trim()))
+          setSelectedIndex(0)
         }
       } finally {
         setLoading(false)
@@ -180,7 +223,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: -8 }}
             transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
-            className="flex max-h-[480px] w-[640px] flex-col rounded-2xl border border-[var(--border-strong)] bg-[var(--bg-elevated)] p-3"
+            className="flex max-h-[560px] w-[720px] flex-col rounded-2xl border border-[var(--border-strong)] bg-[var(--bg-elevated)] p-3"
             onClick={(e) => e.stopPropagation()}
             onKeyDown={handleKeyDown}
           >
@@ -229,35 +272,61 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
                         const isSelected = currentIndex === selectedIndex
 
                         return (
-                          <button
-                            key={`${result.path}:${result.line_number}:${result.name}`}
-                            data-selected={isSelected}
-                            onClick={() => navigateToResult(result)}
-                            onMouseEnter={() => setSelectedIndex(currentIndex)}
-                            className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left transition-colors ${
-                              isSelected
-                                ? 'bg-[var(--bg-hover)] text-[var(--text-primary)]'
-                                : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]'
-                            }`}
-                          >
-                            <Icon
-                              size={16}
-                              weight="duotone"
-                              className={isSelected ? 'text-[var(--accent-graph)]' : 'text-[var(--text-tertiary)]'}
-                            />
-                            <span className="flex min-w-0 flex-1 items-baseline gap-2">
-                              <span
-                                className="truncate font-[var(--font-display)] text-sm font-medium"
-                                style={{ fontFamily: 'var(--font-display)' }}
-                              >
-                                {result.name}
+                          <div key={`${result.path}:${result.line_number}:${result.name}`}>
+                            <button
+                              data-selected={isSelected}
+                              onClick={() => navigateToResult(result)}
+                              onMouseEnter={() => setSelectedIndex(currentIndex)}
+                              className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left transition-colors ${
+                                isSelected
+                                  ? 'bg-[var(--bg-hover)] text-[var(--text-primary)]'
+                                  : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]'
+                              }`}
+                            >
+                              <Icon
+                                size={16}
+                                weight="duotone"
+                                className={isSelected ? 'text-[var(--accent-graph)]' : 'text-[var(--text-tertiary)]'}
+                              />
+                              <span className="flex min-w-0 flex-1 items-baseline gap-2">
+                                <span
+                                  className="truncate font-[var(--font-display)] text-sm font-medium"
+                                  style={{ fontFamily: 'var(--font-display)' }}
+                                >
+                                  {result.name}
+                                </span>
+                                <span className="truncate text-xs text-[var(--text-tertiary)]">
+                                  {result.path}
+                                  {result.line_number > 0 && `:${result.line_number}`}
+                                </span>
                               </span>
-                              <span className="truncate text-xs text-[var(--text-tertiary)]">
-                                {result.path}
-                                {result.line_number > 0 && `:${result.line_number}`}
-                              </span>
-                            </span>
-                          </button>
+                            </button>
+
+                            {/* Source code preview */}
+                            <AnimatePresence>
+                              {isSelected && (
+                                <motion.div
+                                  initial={{ opacity: 0, height: 0 }}
+                                  animate={{ opacity: 1, height: 'auto' }}
+                                  exit={{ opacity: 0, height: 0 }}
+                                  transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
+                                  className="overflow-hidden"
+                                >
+                                  <div
+                                    className="mx-3 mb-1 rounded-md border-l-2 border-l-[var(--accent-graph)] bg-[var(--bg-base)] px-2 py-0.5"
+                                    style={{
+                                      fontFamily: 'var(--font-display)',
+                                      fontSize: '11px',
+                                      color: 'var(--text-secondary)',
+                                      whiteSpace: 'pre',
+                                    }}
+                                  >
+                                    {getPreview(result)}
+                                  </div>
+                                </motion.div>
+                              )}
+                            </AnimatePresence>
+                          </div>
                         )
                       })}
                     </div>

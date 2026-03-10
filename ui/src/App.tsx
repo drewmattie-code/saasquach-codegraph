@@ -8,6 +8,9 @@ import PipelinesPage from '@/pages/PipelinesPage'
 import InsightsPage from '@/pages/InsightsPage'
 import RisksPage from '@/pages/RisksPage'
 import SettingsPage from '@/pages/SettingsPage'
+import AnalyticsPage from '@/pages/AnalyticsPage'
+import SearchPage from '@/pages/SearchPage'
+import DependenciesPage from '@/pages/DependenciesPage'
 
 export default function App() {
   return <BrowserRouter>
@@ -20,6 +23,9 @@ export default function App() {
         <Route path='/pipelines' element={<PipelinesPage />} />
         <Route path='/insights' element={<InsightsPage />} />
         <Route path='/risks' element={<RisksPage />} />
+        <Route path='/analytics' element={<AnalyticsPage />} />
+        <Route path='/search' element={<SearchPage />} />
+        <Route path='/dependencies' element={<DependenciesPage />} />
         <Route path='/settings' element={<SettingsPage />} />
       </Route>
     </Routes>

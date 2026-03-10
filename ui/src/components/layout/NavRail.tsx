@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { ChartLineUp, Graph, GitBranch, Warning, Lightbulb, Gear, Folder, Lightning, CaretUpDown } from '@phosphor-icons/react'
+import { ChartLineUp, Graph, GitBranch, Warning, Lightbulb, Gear, Folder, Lightning, CaretUpDown, ChartBar, MagnifyingGlass, TreeStructure } from '@phosphor-icons/react'
 import { NavLink } from 'react-router-dom'
 import { useState } from 'react'
 
@@ -7,10 +7,13 @@ const items = [
   ['/', 'Overview', ChartLineUp, 'var(--accent-graph)'],
   ['/repositories', 'Repositories', Folder, 'var(--accent-health)'],
   ['/graph', 'Graph', Graph, 'var(--accent-graph)'],
+  ['/search', 'Search', MagnifyingGlass, 'var(--accent-graph)'],
+  ['/dependencies', 'Dependencies', TreeStructure, 'var(--accent-flow)'],
   ['/changes', 'Changes', GitBranch, 'var(--accent-change)'],
   ['/pipelines', 'Pipelines', Lightning, 'var(--accent-flow)'],
   ['/insights', 'Insights', Lightbulb, 'var(--accent-insight)'],
   ['/risks', 'Risks', Warning, 'var(--accent-risk)'],
+  ['/analytics', 'Analytics', ChartBar, 'var(--accent-flow)'],
   ['/settings', 'Settings', Gear, 'var(--text-tertiary)'],
 ] as const
 

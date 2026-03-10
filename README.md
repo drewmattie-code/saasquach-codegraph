@@ -1,5 +1,29 @@
 # 🏗️ CodeGraphContext (CGC)
 
+## SaaSquach CodeGraph Enterprise UI (v1)
+
+### Run full stack
+```bash
+./start.sh
+```
+
+- Frontend: http://localhost:7476
+- API: http://localhost:7477
+
+### API-only
+```bash
+source .venv/bin/activate
+pip install -r api/requirements.txt
+uvicorn api.main:app --reload --port 7477
+```
+
+### UI-only
+```bash
+cd ui
+npm install
+npm run dev -- --port 7476
+```
+
 <p align="center">
   <br>
   <b>Bridge the gap between deep code graphs and AI context.</b>

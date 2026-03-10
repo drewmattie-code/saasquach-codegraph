@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from api.routers import analysis, graph, mcp, repos, search, stats
 from api.services.cgc_service import cgc_service
@@ -62,3 +65,9 @@ async def mcp_feed(websocket: WebSocket) -> None:
             await asyncio.sleep(2)
     except WebSocketDisconnect:
         await mcp_ws.disconnect(websocket)
+
+
+# Serve built React app — must be last, catches all unmatched routes
+_dist = Path(__file__).parent.parent / "ui" / "dist"
+if _dist.exists():
+    app.mount("/", StaticFiles(directory=str(_dist), html=True), name="static")

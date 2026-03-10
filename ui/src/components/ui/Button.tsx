@@ -1,8 +1,6 @@
-import type { ButtonHTMLAttributes, PropsWithChildren } from 'react'
-import { clsx } from 'clsx'
+import type { ButtonHTMLAttributes } from 'react'
+import { cn } from '@/lib/utils'
 
-interface Props extends ButtonHTMLAttributes<HTMLButtonElement> { variant?: 'primary' | 'ghost' }
-
-export function Button({ children, variant = 'primary', className, ...rest }: PropsWithChildren<Props>) {
-  return <button className={clsx('rounded-lg px-3 py-2 text-sm transition border', variant === 'primary' ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200' : 'bg-transparent border-[#2a2a3a] text-[#f0f0f5]', className)} {...rest}>{children}</button>
+export function Button({ className, ...props }: ButtonHTMLAttributes<HTMLButtonElement>) {
+  return <button className={cn('focus-ring rounded-lg border px-3 py-2 text-sm font-medium', className)} {...props} />
 }

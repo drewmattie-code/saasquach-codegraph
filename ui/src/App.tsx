@@ -1,32 +1,27 @@
-import { Navigate, Route, Routes } from 'react-router-dom'
-import { Layout } from './components/layout/Layout'
-import { Toast } from './components/ui/Toast'
-import { AIHubPage } from './pages/AIHub'
-import { AnalysisPage } from './pages/Analysis'
-import { DashboardPage } from './pages/Dashboard'
-import { GraphExplorerPage } from './pages/GraphExplorer'
-import { RepositoriesPage } from './pages/Repositories'
-import { SearchPage } from './pages/Search'
-import { SettingsPage } from './pages/Settings'
+import { BrowserRouter, Route, Routes } from 'react-router-dom'
+import { Shell } from '@/components/layout/Shell'
+import OverviewPage from '@/pages/OverviewPage'
+import GraphExplorerPage from '@/pages/GraphExplorerPage'
+import RepositoriesPage from '@/pages/RepositoriesPage'
+import ChangesPage from '@/pages/ChangesPage'
+import PipelinesPage from '@/pages/PipelinesPage'
+import InsightsPage from '@/pages/InsightsPage'
+import RisksPage from '@/pages/RisksPage'
+import SettingsPage from '@/pages/SettingsPage'
 
-function App() {
-  return (
-    <>
-      <Routes>
-        <Route element={<Layout />}>
-          <Route path="/" element={<DashboardPage />} />
-          <Route path="/graph" element={<GraphExplorerPage />} />
-          <Route path="/search" element={<SearchPage />} />
-          <Route path="/analysis" element={<AnalysisPage />} />
-          <Route path="/repositories" element={<RepositoriesPage />} />
-          <Route path="/ai-hub" element={<AIHubPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-          <Route path="*" element={<Navigate to="/" />} />
-        </Route>
-      </Routes>
-      <Toast />
-    </>
-  )
+export default function App() {
+  return <BrowserRouter>
+    <Routes>
+      <Route element={<Shell />}>
+        <Route path='/' element={<OverviewPage />} />
+        <Route path='/graph' element={<GraphExplorerPage />} />
+        <Route path='/repositories' element={<RepositoriesPage />} />
+        <Route path='/changes' element={<ChangesPage />} />
+        <Route path='/pipelines' element={<PipelinesPage />} />
+        <Route path='/insights' element={<InsightsPage />} />
+        <Route path='/risks' element={<RisksPage />} />
+        <Route path='/settings' element={<SettingsPage />} />
+      </Route>
+    </Routes>
+  </BrowserRouter>
 }
-
-export default App

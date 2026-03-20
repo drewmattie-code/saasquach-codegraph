@@ -6,43 +6,26 @@ import { generateMockGraph } from '@/data/generateGraph'
 cytoscape.use(fcose as Parameters<typeof cytoscape.use>[0])
 
 interface ApiResponse {
-  nodes: Array<{ id: number; name: string; type: string; path?: string }>
-  edges: Array<{ id: number; source: number; target: number; type?: string; kind?: string }>
+  nodes: Array<{ id: number; name: string; type: string; path?: string; color?: string }>
+  edges: Array<{ id: number; source: number; target: number; type?: string; kind?: string; edgeColor?: string }>
 }
 
-// Type-based coloring
+// GitNexus 6-color nebula palette
 const TYPE_COLORS: Record<string, string> = {
-  function: '#06d6a0',
-  class:    '#ff006e',
-  module:   '#ffd23f',
-  method:   '#06d6a0',
-  variable: '#48bfe3',
-  import:   '#8338ec',
-  export:   '#8338ec',
-  file:     '#48bfe3',
+  function: '#00d4aa', class: '#e040fb', module: '#ff9100',
+  interface: '#a371f7', variable: '#76ff03', import: '#2979ff',
+  method: '#00d4aa', export: '#2979ff', file: '#ff9100',
 }
 
 function nodeColor(kind: string): string {
-  return TYPE_COLORS[kind.toLowerCase()] ?? '#06d6a0'
+  return TYPE_COLORS[kind.toLowerCase()] ?? '#00d4aa'
 }
 
-function edgeColor(kind: string): string {
-  if (kind === 'calls') return '#3a86ff'
-  if (kind === 'imports') return '#8338ec'
-  return '#48bfe3'
-}
-
-const MAX_RENDER_NODES = 300
-const ROTATION_SPEED = 0.0003
-const IDLE_RESUME_MS = 2000
+const MAX_RENDER_NODES = 600
 
 export function DependencyGraphCanvas() {
   const containerRef = useRef<HTMLDivElement>(null)
   const cyRef = useRef<cytoscape.Core | null>(null)
-  const pulseIntervalRef = useRef<number | null>(null)
-  const rotationRef = useRef<number | null>(null)
-  const interactingRef = useRef(false)
-  const idleTimerRef = useRef<number | null>(null)
   const tooltipRef = useRef<HTMLDivElement>(null)
   const [ready, setReady] = useState(false)
   const [error] = useState<string | null>(null)
@@ -60,10 +43,9 @@ export function DependencyGraphCanvas() {
         edgeCount[t] = (edgeCount[t] ?? 0) + 1
       }
 
-      // Only connected nodes
-      const connectedIds = new Set<string>()
-      for (const e of data.edges) { connectedIds.add(String(e.source)); connectedIds.add(String(e.target)) }
-      const connectedNodes = data.nodes.filter(n => connectedIds.has(String(n.id)))
+      const connIds = new Set<string>()
+      for (const e of data.edges) { connIds.add(String(e.source)); connIds.add(String(e.target)) }
+      const connectedNodes = data.nodes.filter(n => connIds.has(String(n.id)))
 
       const sortedNodes = [...connectedNodes]
         .sort((a, b) => (edgeCount[String(b.id)] ?? 0) - (edgeCount[String(a.id)] ?? 0))
@@ -73,20 +55,23 @@ export function DependencyGraphCanvas() {
 
       const cy = cytoscape({
         container: containerRef.current,
-        userZoomingEnabled: true,
-        userPanningEnabled: true,
+        userZoomingEnabled: false,
+        userPanningEnabled: false,
         boxSelectionEnabled: false,
-        autoungrabify: false,
+        autoungrabify: true,
+        textureOnViewport: true,
+        hideEdgesOnViewport: true,
+        hideLabelsOnViewport: true,
+        pixelRatio: 1,
         elements: [
           ...sortedNodes.map(n => {
             const kind = (n.type || 'function').toLowerCase()
+            const color = n.color ?? nodeColor(kind)
             return {
               data: {
-                id: String(n.id),
-                label: n.name,
-                kind,
+                id: String(n.id), label: n.name, kind,
                 connectionCount: edgeCount[String(n.id)] ?? 0,
-                nodeColor: nodeColor(kind),
+                nodeColor: color,
               },
             }
           }),
@@ -95,7 +80,7 @@ export function DependencyGraphCanvas() {
               id: `e${i}`,
               source: String(e.source),
               target: String(e.target),
-              kind: e.kind ?? e.type ?? 'calls',
+              edgeColor: e.edgeColor ?? nodeColor((sortedNodes.find(n => n.id === e.source)?.type || 'function').toLowerCase()),
             },
           })),
         ],
@@ -103,32 +88,17 @@ export function DependencyGraphCanvas() {
           {
             selector: 'node',
             style: {
-              label: 'data(label)',
-              'font-size': 9,
-              'font-family': 'JetBrains Mono, monospace',
-              color: '#e2e8f0',
-              'text-valign': 'bottom',
-              'text-margin-y': 4,
               'background-color': 'data(nodeColor)',
-              'border-width': 0,
-              width: (ele: cytoscape.NodeSingular) => {
-                const c = Number(ele.data('connectionCount') ?? 0)
-                return Math.max(8, Math.min(24, 8 + c * 1.6))
-              },
-              height: (ele: cytoscape.NodeSingular) => {
-                const c = Number(ele.data('connectionCount') ?? 0)
-                return Math.max(8, Math.min(24, 8 + c * 1.6))
-              },
-              'outline-width': 0,
-              'outline-color': 'data(nodeColor)',
-              'text-wrap': 'ellipsis',
-              'text-max-width': '90px',
-              'text-background-color': '#0d1117',
-              'text-background-opacity': 0.7,
-              'text-background-padding': '2px',
+              'background-opacity': 0.9,
+              width: (ele: cytoscape.NodeSingular) => Math.max(3, Math.min(24, 3 + Number(ele.data('connectionCount') ?? 0) * 0.4)),
+              height: (ele: cytoscape.NodeSingular) => Math.max(3, Math.min(24, 3 + Number(ele.data('connectionCount') ?? 0) * 0.4)),
+              'border-width': (ele: cytoscape.NodeSingular) => Math.max(0.5, Math.min(4, Number(ele.data('connectionCount') ?? 0) * 0.1)),
+              'border-color': 'data(nodeColor)',
+              'border-opacity': 0.3,
+              label: '',
               'shadow-color': 'data(nodeColor)',
-              'shadow-opacity': 0.35,
-              'shadow-blur': 6,
+              'shadow-opacity': 0.2,
+              'shadow-blur': 3,
               'shadow-offset-x': 0,
               'shadow-offset-y': 0,
             } as cytoscape.Css.Node,
@@ -136,78 +106,45 @@ export function DependencyGraphCanvas() {
           {
             selector: 'node.hover-node',
             style: {
-              'outline-width': 3,
-              'shadow-opacity': 1,
-              'shadow-blur': 22,
+              'background-opacity': 1,
+              'border-width': 4,
+              'border-opacity': 0.6,
+              'shadow-opacity': 0.8,
+              'shadow-blur': 12,
+              label: 'data(label)',
+              'font-size': 8,
+              'font-family': 'JetBrains Mono, monospace',
+              color: '#e0e0e8',
+              'text-valign': 'bottom',
+              'text-margin-y': 3,
+              'text-outline-color': '#0a0a0f',
+              'text-outline-width': 2,
               'z-index': 999,
-            } as cytoscape.Css.Node,
-          },
-          {
-            selector: 'node.selected-node',
-            style: {
-              'border-width': 2,
-              'border-color': '#f8fafc',
-              'shadow-opacity': 0.95,
-              'shadow-blur': 18,
-            } as cytoscape.Css.Node,
-          },
-          {
-            selector: 'node.selected-pulse',
-            style: {
-              'shadow-opacity': 1,
-              'shadow-blur': 28,
             } as cytoscape.Css.Node,
           },
           {
             selector: 'edge',
             style: {
-              width: 0.5,
-              'line-color': (ele: cytoscape.EdgeSingular) => edgeColor(String(ele.data('kind') ?? '')),
-              'target-arrow-shape': 'triangle',
-              'target-arrow-color': (ele: cytoscape.EdgeSingular) => edgeColor(String(ele.data('kind') ?? '')),
-              'arrow-scale': 0.6,
-              'curve-style': 'bezier',
-              opacity: 0.25,
+              'line-color': 'data(edgeColor)',
+              'line-opacity': 0.04,
+              width: 0.4,
+              'curve-style': 'haystack',
+              'haystack-radius': 0.5,
             } as cytoscape.Css.Edge,
           },
         ],
         layout: {
           name: 'cose',
-          animate: true,
-          randomize: false,
-          componentSpacing: 20,
-          nodeRepulsion: () => 2000,
-          gravity: 1.2,
-          idealEdgeLength: () => 30,
-          numIter: 1500,
+          animate: false,
+          randomize: true,
+          componentSpacing: 15,
+          nodeRepulsion: () => 3000,
+          gravity: 0.5,
+          idealEdgeLength: () => 25,
+          numIter: 1000,
           fit: true,
-          padding: 20,
-          nestingFactor: 1.2,
-          gravityRange: 3.8,
+          padding: 10,
         } as cytoscape.LayoutOptions,
-      })
-
-      // Interactions
-      cy.on('tap', 'node', (e) => {
-        cy.nodes().removeClass('selected-node selected-pulse')
-        e.target.addClass('selected-node')
-        const nodeId = e.target.id()
-        const neighbors = new Set<string>([nodeId])
-        e.target.connectedEdges().forEach((edge: cytoscape.EdgeSingular) => {
-          neighbors.add(edge.data('source'))
-          neighbors.add(edge.data('target'))
-        })
-        cy.nodes().style('opacity', (ele: cytoscape.NodeSingular) =>
-          neighbors.has(ele.id()) ? 1 : 0.08)
-        cy.edges().style('opacity', (ele: cytoscape.EdgeSingular) =>
-          (ele.data('source') === nodeId || ele.data('target') === nodeId) ? 0.8 : 0.03)
-      })
-      cy.on('tap', (e) => {
-        if (e.target === cy) {
-          cy.nodes().removeClass('selected-node selected-pulse')
-          cy.nodes().style('opacity', 1)
-          cy.edges().style('opacity', 0.25)
-        }
       })
 
       // Hover tooltip
@@ -218,12 +155,11 @@ export function DependencyGraphCanvas() {
           const kind = e.target.data('kind')
           const conns = e.target.data('connectionCount') ?? 0
           tooltip.innerHTML = `
-            <div style="font-weight:600;margin-bottom:2px">${e.target.data('label')}</div>
-            <div style="display:flex;align-items:center;gap:6px">
-              <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${nodeColor(kind)}"></span>
-              <span style="text-transform:uppercase;font-size:9px;opacity:0.6">${kind}</span>
-              <span style="opacity:0.5;font-size:9px">·</span>
-              <span style="opacity:0.5;font-size:9px">${conns} conn</span>
+            <div style="font-weight:600;margin-bottom:2px;font-size:11px">${e.target.data('label')}</div>
+            <div style="display:flex;align-items:center;gap:4px">
+              <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${nodeColor(kind)}"></span>
+              <span style="text-transform:uppercase;font-size:8px;opacity:0.6">${kind}</span>
+              <span style="opacity:0.4;font-size:8px">· ${conns} conn</span>
             </div>
           `
           tooltip.style.opacity = '1'
@@ -235,7 +171,6 @@ export function DependencyGraphCanvas() {
         if (tooltip) tooltip.style.opacity = '0'
       })
 
-      // Tooltip follows mouse
       const handleMouseMove = (evt: MouseEvent) => {
         const tooltip = tooltipRef.current
         if (!tooltip) return
@@ -244,101 +179,27 @@ export function DependencyGraphCanvas() {
       }
       document.addEventListener('mousemove', handleMouseMove)
 
-      // Drag pin/unpin
-      cy.on('free', 'node', (e) => { e.target.lock() })
-      cy.on('dbltap', 'node', (e) => { e.target.unlock() })
-
-      // Pause rotation on interaction
-      const pauseRotation = () => {
-        interactingRef.current = true
-        if (idleTimerRef.current !== null) window.clearTimeout(idleTimerRef.current)
-        idleTimerRef.current = window.setTimeout(() => {
-          interactingRef.current = false
-        }, IDLE_RESUME_MS)
-      }
-      cy.on('pan zoom drag tapstart', pauseRotation)
-
-      // Pulse
-      if (pulseIntervalRef.current !== null) window.clearInterval(pulseIntervalRef.current)
-      pulseIntervalRef.current = window.setInterval(() => {
-        const sel = cy.$('node.selected-node')
-        if (sel.length === 0) return
-        if (sel.hasClass('selected-pulse')) sel.removeClass('selected-pulse')
-        else sel.addClass('selected-pulse')
-      }, 700)
-
-      // Ambient rotation
-      function rotateNodes() {
-        if (!interactingRef.current && cy && !cy.destroyed()) {
-          const bb = cy.elements().boundingBox()
-          const cx = (bb.x1 + bb.x2) / 2
-          const cy2 = (bb.y1 + bb.y2) / 2
-          const cos = Math.cos(ROTATION_SPEED)
-          const sin = Math.sin(ROTATION_SPEED)
-          cy.nodes().positions((node) => {
-            if (node.locked()) return node.position()
-            const pos = node.position()
-            const dx = pos.x - cx
-            const dy = pos.y - cy2
-            return { x: cx + dx * cos - dy * sin, y: cy2 + dx * sin + dy * cos }
-          })
-        }
-        rotationRef.current = requestAnimationFrame(rotateNodes)
-      }
-      cy.one('layoutstop', () => {
-        rotationRef.current = requestAnimationFrame(rotateNodes)
-      })
-
-      // Cascade ripple — nodes appear from hub outward
-      cy.nodes().style('opacity', 0)
-      cy.edges().style('opacity', 0)
-      cy.one('layoutstop', () => {
-        // Sort by connection count (hubs first), then stagger reveal
-        const sorted = cy.nodes().sort((a: cytoscape.NodeSingular, b: cytoscape.NodeSingular) =>
-          Number(b.data('connectionCount') ?? 0) - Number(a.data('connectionCount') ?? 0)
-        )
-        sorted.forEach((node: cytoscape.NodeSingular, i: number) => {
-          setTimeout(() => {
-            node.animate({ style: { opacity: 1 } } as any, { duration: 300 })
-            // Also reveal edges connected to visible nodes
-            node.connectedEdges().forEach((edge: cytoscape.EdgeSingular) => {
-              const otherOpacity = edge.source().id() === node.id()
-                ? Number(edge.target().style('opacity'))
-                : Number(edge.source().style('opacity'))
-              if (otherOpacity > 0.5) {
-                edge.animate({ style: { opacity: 0.25 } } as any, { duration: 200 })
-              }
-            })
-          }, Math.min(i * 8, 1200)) // Cap total cascade at 1.2s
-        })
-      })
+      cy.one('layoutstop', () => { cy.resize(); cy.fit(undefined, 10) })
 
       cyRef.current = cy
       setReady(true)
 
-      // Return cleanup for mousemove
       return () => document.removeEventListener('mousemove', handleMouseMove)
     }
 
     let mouseCleanup: (() => void) | undefined
 
-    fetch('/api/graph?limit=300')
+    fetch('/api/graph?limit=600')
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
-      .then((data: ApiResponse) => {
-        mouseCleanup = buildGraph(data)
-      })
+      .then((data: ApiResponse) => { mouseCleanup = buildGraph(data) })
       .catch(() => {
-        // Fallback to procedural data
-        const mock = generateMockGraph(300)
+        const mock = generateMockGraph(800)
         mouseCleanup = buildGraph({ nodes: mock.nodes, edges: mock.edges as any })
       })
 
     return () => {
       cancelled = true
       mouseCleanup?.()
-      if (pulseIntervalRef.current !== null) { window.clearInterval(pulseIntervalRef.current); pulseIntervalRef.current = null }
-      if (rotationRef.current !== null) { cancelAnimationFrame(rotationRef.current); rotationRef.current = null }
-      if (idleTimerRef.current !== null) { window.clearTimeout(idleTimerRef.current); idleTimerRef.current = null }
       if (cyRef.current) { cyRef.current.destroy(); cyRef.current = null }
     }
   }, [])
@@ -350,21 +211,20 @@ export function DependencyGraphCanvas() {
   )
 
   return (
-    <div className="relative h-[410px] w-full overflow-hidden rounded-xl" style={{ background: 'linear-gradient(160deg, #161b22 0%, #0d1117 60%, #0b1118 100%)' }}>
+    <div className="relative h-[410px] w-full overflow-hidden rounded-xl" style={{ background: '#0a0a0f' }}>
       {!ready && (
         <div className="absolute inset-0 z-10 flex items-center justify-center">
           <div className="flex flex-col items-center gap-3">
-            <div className="h-8 w-8 animate-spin rounded-full border-2 border-[var(--accent-graph)] border-t-transparent" />
-            <span className="font-mono text-xs text-[var(--text-tertiary)]">Loading graph…</span>
+            <div className="h-8 w-8 animate-spin rounded-full border-2 border-[#00d4aa] border-t-transparent" />
+            <span className="font-mono text-xs text-[#555568]">Loading graph…</span>
           </div>
         </div>
       )}
       <div ref={containerRef} className="h-full w-full" />
-      {/* Tooltip */}
       <div
         ref={tooltipRef}
-        className="pointer-events-none fixed z-50 rounded-lg border border-[var(--border-default)] bg-[var(--bg-elevated)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] shadow-lg"
-        style={{ opacity: 0, transition: 'opacity 150ms', fontFamily: 'var(--font-display)' }}
+        className="pointer-events-none fixed z-50 max-w-[220px] rounded-lg border border-[#3a3a4f] bg-[#1c1c28] px-2.5 py-1.5 text-xs text-[#e0e0e8] shadow-lg"
+        style={{ opacity: 0, transition: 'opacity 120ms', fontFamily: 'var(--font-display)' }}
       />
     </div>
   )

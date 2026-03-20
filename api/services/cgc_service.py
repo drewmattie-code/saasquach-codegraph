@@ -99,25 +99,60 @@ class CGCService:
         if repo and repo != "all":
             where = "WHERE repo.name = $repo"
             params["repo"] = repo
-        nodes = self._run_query(
+        # Fetch File nodes first (architecture backbone), then Class, then Function
+        # This ensures IMPORTS edges between files are captured in the node window
+        file_limit = min(limit, 300)
+        class_limit = min(limit // 2, 200)
+        func_limit = max(limit - file_limit - class_limit, 0)
+
+        file_nodes = self._run_query(
             f"""
-            MATCH (repo:Repository)-[:CONTAINS*]->(n)
-            {where} AND (n:Function OR n:Class OR n:File)
+            MATCH (repo:Repository)-[:CONTAINS*]->(n:File)
+            {where}
             RETURN DISTINCT id(n) as id, n.name as name, labels(n)[0] as type,
                    n.path as path, n.line_number as line
-            LIMIT $limit
+            LIMIT $file_limit
             """,
-            **params,
+            **{**params, "file_limit": file_limit},
         )
-        edges = self._run_query(
+        class_nodes = self._run_query(
             f"""
-            MATCH (repo:Repository)-[:CONTAINS*]->(a)-[r:CALLS|INHERITS|IMPORTS]->(b)
+            MATCH (repo:Repository)-[:CONTAINS*]->(n:Class)
             {where}
-            RETURN id(r) as id, id(a) as source, id(b) as target, type(r) as kind
-            LIMIT $limit
+            RETURN DISTINCT id(n) as id, n.name as name, labels(n)[0] as type,
+                   n.path as path, n.line_number as line
+            LIMIT $class_limit
             """,
-            **params,
+            **{**params, "class_limit": class_limit},
         )
+        func_nodes: list[dict[str, Any]] = []
+        if func_limit > 0:
+            func_nodes = self._run_query(
+                f"""
+                MATCH (repo:Repository)-[:CONTAINS*]->(n:Function)
+                {where}
+                RETURN DISTINCT id(n) as id, n.name as name, labels(n)[0] as type,
+                       n.path as path, n.line_number as line
+                LIMIT $func_limit
+                """,
+                **{**params, "func_limit": func_limit},
+            )
+
+        nodes = file_nodes + class_nodes + func_nodes
+        # Fetch edges specifically for the returned node set
+        node_ids = [n["id"] for n in nodes]
+        edges: list[dict[str, Any]] = []
+        if node_ids:
+            edges = self._run_query(
+                """
+                MATCH (a)-[r:CALLS|INHERITS|IMPORTS|CONTAINS]->(b)
+                WHERE id(a) IN $node_ids AND id(b) IN $node_ids
+                RETURN id(r) as id, id(a) as source, id(b) as target, type(r) as kind
+                LIMIT $edge_limit
+                """,
+                node_ids=node_ids,
+                edge_limit=min(len(node_ids) * 15, 8000),
+            )
         return {"nodes": nodes, "edges": edges}
 
     def node_detail(self, node_id: int) -> dict[str, Any]:
